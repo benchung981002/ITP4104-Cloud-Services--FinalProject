@@ -1,0 +1,1043 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy final project
+
+Parameters:
+  AvailabilityZoneA: 
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: "us-east-1a"
+  AvailabilityZoneB: 
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: "us-east-1b"
+  WebInstanceType:
+    Type: String
+    Default: t2.large
+    Description: Default Web Tier is t2.large.
+  AppInstanceType:
+    Type: String
+    Default: r3.2xlarge
+    Description: Default Application Tier is r3.2xlarge.
+  InstanceCount:
+    Type: Number
+    Default: 5
+    Description: Number of EC2 instances to launch
+  Owner:
+    Description: Enter Team or Individual Name Responsible for the Stack.
+    Type: String
+    Default: FirstName LastName
+  Project:
+    Type: String
+    Default: MySQL RDS Creation
+  DeleteAfter:
+    Description: Enter Date It's Ok to Delete the Stack or 'Never' if meant to be persistent.
+    Type: String
+    Default: 00/00/201x
+  TcpPort:
+    Description: Enter RDS Listening TCP Port number.
+    Type: Number
+    Default: 3306
+    
+  ConfigureDns:
+    Description: Configure Route 53 DNS Alias for RDS? Be sure a matching record doesn't already exist.
+    Type: String
+    Default: 'false'
+    AllowedValues:
+    - 'true'
+    - 'false'
+  Cname:
+    Description: "(Skip if Not Configuring Route 53) DNS Record to Update for the RDS Instance."
+    Type: String
+    Default: db.domain.com
+  R53HostedZoneName:
+    Description: "(Skip if Not Configuring Route 53) Hosted DNS Name."
+    Type: String
+    Default: domain.com
+
+  BackupRetentionPeriod:
+    Description: Enter Backup Retention Period in Days.
+    Type: Number
+    Default: 7
+  PreferredBackupWindow:
+    Description: Enter Preferred Backup Window Time (UTC).
+    Type: String
+    Default: 17:00-19:00
+  PreferredMaintenanceWindow:
+    Description: Enter Preferred Maintenance Window Time (UTC).
+    Type: String
+    Default: Sun:19:00-Sun:23:00
+
+  ConfigureProvisionedIops:
+    Description: Configure Route 53 DNS Alias for RDS? Be sure a matching record doesn't already exist.
+    Type: String
+    Default: 'false'
+    AllowedValues:
+    - 'true'
+    - 'false'
+  SnapshotOnDelete:
+    Description: Create a Snapshot on Delete?
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+  ProvisionedIopsValue:
+    Description: "(Skip if Not Using Provisioned IOPS) Set Provisioned IOPS 1000-30000."
+    Type: Number
+    Default: 1000
+    MinValue: 1000
+    MaxValue: 30000
+
+  AutoMinorVersionUpgrade:
+    Description: Allow Automatic Minor Version Upgrades?
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+
+  InstanceType:
+    Type: String
+    Default: db.t2.large
+  
+  MultiAvailabilityZone:
+    Description: Enable Multi Availability Zones?
+    Type: String
+    Default: 'false'
+    AllowedValues:
+    - 'true'
+    - 'false'
+
+  AlertSnsTopicArn:
+    Description: Enter Alert Notification SNS Topic ARN for RDS.
+    Type: String
+    Default: arn:aws:sns:us-west-2:000000000000:rds-alerts
+  SetupAlarms:
+    Description: Setup Cloudwatch Alarms?
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+
+Conditions:
+  ConfigureRoute53: !Equals [ !Ref ConfigureDns, 'true' ]
+  ConfigureAlarms: !Equals [ !Ref SetupAlarms, 'true' ]
+  ConfigureSnapshotOnDelete: !Equals [ !Ref SnapshotOnDelete, 'true' ]    
+
+Mappings:
+  AWSInstanceType2Arch:
+    "t2.large":
+      "Arch": "64"
+    "r3.2xlarge":
+      "Arch": "64"
+  AWSRegionArch2AMI:
+    "us-west-1":
+      "64" : "ami-b18ed2f4"
+    "us-east-1":
+      "64" : "ami-e965ba80"
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16 
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: Project VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: Project Internet Gateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC 
+      InternetGatewayId: !Ref InternetGateway 
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneA"
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneB"
+      Tags:
+        - Key: Name
+          Value: Public Subnet 2 
+        
+  PublicRouteTable: 
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PublicSubnet1"
+      RouteTableId: !Ref "PublicRouteTable"
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PublicSubnet2"
+      RouteTableId: !Ref "PublicRouteTable"
+      
+  PublicNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref VPC
+        
+  InboundHTTPPublicNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '100'
+      Protocol: "6"
+      RuleAction: allow
+      Egress: "false"
+      CidrBlock: 0.0.0.0/0
+      PortRange: 
+        From: "80" 
+        To: "80"
+
+  InboundResponsePortsPublicNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '101'
+      Protocol: "6"
+      RuleAction: allow
+      Egress: "false"
+      CidrBlock: 0.0.0.0/0
+      PortRange: 
+        From: "1024" 
+        To: "65535"
+          
+  OutBoundHTTPPublicNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "PublicNetworkAcl"
+      RuleNumber: '100'
+      Protocol: "6"
+      RuleAction: allow
+      Egress: "true"
+      CidrBlock: 0.0.0.0/0
+      PortRange: 
+        From: "80" 
+        To: "80"
+
+  OutBoundResponsePortsPublicNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '101'
+      Protocol: "6"
+      RuleAction: allow
+      Egress: "true"
+      CidrBlock: 0.0.0.0/0
+      PortRange: 
+        From: "1024" 
+        To: "65535"
+          
+  PublicSubnet1NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PublicSubnet1"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+      
+  PublicSubnet2NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PublicSubnet2"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+          
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneA"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneB"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 2 
+          
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneA"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 3 
+
+  PrivateSubnet4:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.5.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneB"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 4
+
+  PrivateSubnet5:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.6.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneA"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 5 
+          
+  PrivateSubnet6:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.7.0/24
+      AvailabilityZone: !Ref "AvailabilityZoneB"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 6 
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Private Route Table
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet1"
+      RouteTableId: !Ref "PrivateRouteTable"
+      
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet2"
+      RouteTableId: !Ref "PrivateRouteTable"
+  
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet3"
+      RouteTableId: !Ref "PrivateRouteTable"
+
+  PrivateSubnet4RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet4"
+      RouteTableId: !Ref "PrivateRouteTable"
+      
+  PrivateSubnet5RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet5"
+      RouteTableId: !Ref "PrivateRouteTable"
+  
+  PrivateSubnet6RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet6"
+      RouteTableId: !Ref "PrivateRouteTable"
+  
+  PrivateNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref VPC
+
+  InboundPrivateNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: '100'
+      Protocol: "6"
+      RuleAction: allow
+      Egress: "false"
+      CidrBlock: 0.0.0.0/0
+      PortRange: 
+        From: "0" 
+        To: "65535"
+
+  OutBoundPrivateNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: '100'
+      Protocol: "6"
+      RuleAction: allow
+      Egress: "true"
+      CidrBlock: 0.0.0.0/0
+      PortRange: 
+        From: "0" 
+        To: "65535"      
+
+  PrivateSubnet1NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet1"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+      
+  PrivateSubnet2NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet2"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+      
+  PrivateSubnet3NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet3"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+
+  PrivateSubnet4NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet4"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+      
+  PrivateSubnet5NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet5"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+      
+  PrivateSubnet6NetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "PrivateSubnet6"
+      NetworkAclId: !Ref "PublicNetworkAcl"
+  
+  PublicElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      SecurityGroups: 
+        - !Ref WebLoadBalancerSecurityGroup
+      Subnets: 
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Listeners: 
+      - LoadBalancerPort: "80"
+        InstancePort: "80"
+        Protocol: HTTP
+      HealthCheck:
+        Target: HTTP:80/
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '90'
+        Timeout: '60'
+
+  WebLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access on port 80
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+
+  WebServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - !Ref AvailabilityZoneA
+        - !Ref AvailabilityZoneB
+      VPCZoneIdentifier: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      LaunchConfigurationName: !Ref "WebTierLaunchConfig"
+      MinSize: "4"
+      MaxSize: "12"
+      DesiredCapacity: !Ref InstanceCount
+      LoadBalancerNames: 
+        - !Ref PublicElasticLoadBalancer
+      Tags:
+        - Key: Name
+          Value: web-tier
+          PropagateAtLaunch: true
+
+  WebTierLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: 
+        Fn::FindInMap:
+          - "AWSRegionArch2AMI"
+          - Ref: "AWS::Region"
+          - Fn::FindInMap:
+              - "AWSInstanceType2Arch"
+              - Ref: "WebInstanceType"
+              - "Arch"
+      UserData:
+        Fn::Base64: "80"
+      SecurityGroups: 
+        - !Ref "WebInstanceSecurityGroup"
+      InstanceType: !Ref "WebInstanceType"
+
+  WebInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access on the configured port
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "80"
+          ToPort: "80"
+          SourceSecurityGroupId: !Ref WebLoadBalancerSecurityGroup
+
+  WebServerScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: "PercentChangeInCapacity"
+      AutoScalingGroupName: !Ref "WebServerGroup"
+      Cooldown: "300"
+      ScalingAdjustment: 100
+    
+  WebServerScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties: 
+      AdjustmentType: "ChangeInCapacity"
+      AutoScalingGroupName: !Ref "WebServerGroup"
+      Cooldown: "600"
+      ScalingAdjustment: -1
+
+  WebNetworkIn:
+    Type: AWS::CloudWatch::Alarm
+    Properties: 
+      AlarmDescription: "Alarm for EC2 NetworkIn Metric"
+      MetricName: NetworkIn
+      Namespace: AWS/EC2
+      Statistic: Minimum
+      Period: "60"
+      EvaluationPeriods: "3"
+      Threshold: "90"
+      AlarmActions: 
+        - !Ref "WebServerScaleUpPolicy"
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref "WebServerGroup" 
+      ComparisonOperator: "GreaterThanThreshold"
+
+  WebNetworkOut:
+    Type: AWS::CloudWatch::Alarm
+    Properties: 
+      AlarmDescription: "Alarm for EC2 NetworkOut Metric"
+      MetricName: NetworkOut
+      Namespace: AWS/EC2
+      Statistic: Minimum
+      Period: "60"
+      EvaluationPeriods: "3"
+      Threshold: "90"
+      AlarmActions: 
+        - !Ref "WebServerScaleDownPolicy"
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref "WebServerGroup"
+      ComparisonOperator: "LessThanThreshold"  
+          
+  PrivateElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      SecurityGroups: 
+        - !Ref AppLoadBalancerSecurityGroup
+      Subnets: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Listeners: 
+      - LoadBalancerPort: "80"
+        InstancePort: "80"
+        Protocol: HTTP
+      HealthCheck:
+        Target: HTTP:80/
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '90'
+        Timeout: '60'         
+        
+  AppLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access on port 80
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+
+  AppServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - !Ref AvailabilityZoneA
+        - !Ref AvailabilityZoneB
+      VPCZoneIdentifier: 
+        - !Ref PrivateSubnet3
+        - !Ref PrivateSubnet4
+      LaunchConfigurationName:  !Ref "AppTierLaunchConfig"
+      MinSize: "5"
+      MaxSize: "20"
+      DesiredCapacity: !Ref InstanceCount
+      LoadBalancerNames: 
+        - !Ref "PrivateElasticLoadBalancer"
+      Tags:
+        - Key: Name
+          Value: app-tier
+          PropagateAtLaunch: true
+
+  AppTierLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: 
+        Fn::FindInMap:
+          - "AWSRegionArch2AMI"
+          - Ref: "AWS::Region"
+          - Fn::FindInMap:
+              - "AWSInstanceType2Arch"
+              - Ref: "AppInstanceType"
+              - "Arch"
+      UserData:
+        Fn::Base64: "80"
+      SecurityGroups: 
+        - !Ref "AppInstanceSecurityGroup"
+      InstanceType: !Ref "AppInstanceType"
+
+  AppInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access on the configured port
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "80"
+          ToPort: "80"
+          SourceSecurityGroupId: !Ref AppLoadBalancerSecurityGroup
+
+  AppServerScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: "PercentChangeInCapacity"
+      AutoScalingGroupName: !Ref "AppServerGroup"
+      Cooldown: "300"
+      ScalingAdjustment: 100
+    
+  AppServerScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties: 
+      AdjustmentType: "ChangeInCapacity"
+      AutoScalingGroupName: !Ref "AppServerGroup"
+      Cooldown: "600"
+      ScalingAdjustment: -1
+
+  AppCPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties: 
+      AlarmDescription: "Scale-up if CPU > 60% for 10 minutes"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: "120"
+      EvaluationPeriods: "5"
+      Threshold: "40"
+      AlarmActions: 
+        - !Ref "AppServerScaleUpPolicy"
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref "AppServerGroup" 
+      ComparisonOperator: "GreaterThanThreshold"
+
+  AppCPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties: 
+      AlarmDescription: "Scale-down if CPU < 50% for 60 min"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: "120"
+      EvaluationPeriods: "30"
+      Threshold: "20"
+      AlarmActions: 
+        - !Ref "AppServerScaleDownPolicy"
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref "AppServerGroup"
+      ComparisonOperator: "LessThanThreshold"         
+      
+  RDSAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Instance to RDS Access
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Ref "AWS::StackName"
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: Project
+        Value: !Ref Project
+      - Key: DeleteAfter
+        Value: !Ref DeleteAfter
+
+  AccessSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: RDSAccessSecurityGroup
+    Properties:
+      GroupId: !Ref RDSAccessSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort
+      ToPort: !Ref TcpPort
+      SourceSecurityGroupId: !Ref RDSAccessSecurityGroup
+      
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Join [ "", [ "RDS Subnet Group for ", !Ref "AWS::StackName" ] ]
+      SubnetIds: 
+        - !Ref PrivateSubnet5
+        - !Ref PrivateSubnet6
+      Tags:
+      - Key: Name
+        Value: !Ref "AWS::StackName"
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: Project
+        Value: !Ref Project
+      - Key: DeleteAfter
+        Value: !Ref DeleteAfter
+        
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    DependsOn:
+    - DbSubnetGroup
+    - RDSAccessSecurityGroup 
+    Properties:
+      AllocatedStorage: "2100"
+      Iops: "21000"
+      Engine: "MySQL"
+      EngineVersion: "5.6"
+      MasterUsername: "DBUser"
+      MasterUserPassword: "DBPassword"
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: !Ref AutoMinorVersionUpgrade
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      DBInstanceClass: !Ref InstanceType
+      DBInstanceIdentifier: !Ref AWS::StackName
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      MultiAZ: !Ref MultiAvailabilityZone
+      Port: !Ref TcpPort
+      PreferredBackupWindow: !Ref PreferredBackupWindow
+      PreferredMaintenanceWindow: !Ref PreferredMaintenanceWindow
+      PubliclyAccessible: false
+      StorageEncrypted: false
+      VPCSecurityGroups:
+      - !Ref RDSAccessSecurityGroup
+      Tags:
+      - Key: Name
+        Value: !Ref "AWS::StackName"
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: Project
+        Value: !Ref Project
+      - Key: DeleteAfter
+        Value: !Ref DeleteAfter
+      
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicReadWrite
+      LifecycleConfiguration:
+        Rules:
+        - Id: GlacierRule
+          Prefix: glacier
+          Status: Enabled
+          ExpirationInDays: '365'
+          Transitions:
+            - TransitionInDays: '1'
+              StorageClass: Glacier
+          
+Outputs:
+  VPC:
+    Description: VPC
+    Value: !Ref VPC
+
+  InternetGateway:
+    Description: InternetGateway
+    Value: !Ref InternetGateway
+
+  AttachGateway:
+    Description: AttachGateway
+    Value: !Ref AttachGateway
+        
+  PublicRouteTable:
+    Description: PublicRouteTable
+    Value: !Ref  PublicRouteTable
+  
+  PublicRoute:
+    Description: PublicRoute
+    Value: !Ref PublicRoute
+  
+  PublicSubnet1RouteTableAssociation:
+    Description: PublicSubnet1RouteTableAssociation
+    Value: !Ref PublicSubnet1RouteTableAssociation
+  
+  PublicSubnet2RouteTableAssociation:
+    Description: PublicSubnet2RouteTableAssociation
+    Value: !Ref PublicSubnet2RouteTableAssociation
+      
+  PublicNetworkAcl:
+    Description: PublicNetworkAcl
+    Value: !Ref PublicNetworkAcl
+        
+  InboundHTTPPublicNetworkAclEntry:
+    Description: InboundHTTPPublicNetworkAclEntry
+    Value: !Ref InboundHTTPPublicNetworkAclEntry
+  
+  InboundResponsePortsPublicNetworkAclEntry:
+    Description: InboundResponsePortsPublicNetworkAclEntry
+    Value: !Ref InboundResponsePortsPublicNetworkAclEntry
+          
+  OutBoundHTTPPublicNetworkAclEntry:
+    Description: OutBoundHTTPPublicNetworkAclEntry
+    Value: !Ref OutBoundHTTPPublicNetworkAclEntry
+  
+  OutBoundResponsePortsPublicNetworkAclEntry:
+    Description: OutBoundResponsePortsPublicNetworkAclEntry
+    Value: !Ref OutBoundResponsePortsPublicNetworkAclEntry
+          
+  PublicSubnet1NetworkAclAssociation:
+    Description: PublicSubnet1NetworkAclAssociation
+    Value: !Ref PublicSubnet1NetworkAclAssociation
+      
+  PublicSubnet2NetworkAclAssociation:
+    Description: PublicSubnet2NetworkAclAssociation
+    Value: !Ref PublicSubnet2NetworkAclAssociation
+          
+  PrivateSubnet1:
+    Description: PrivateSubnet1
+    Value: !Ref PrivateSubnet1
+  
+  PrivateSubnet2:
+    Description: PrivateSubnet2
+    Value: !Ref PrivateSubnet2
+          
+  PrivateSubnet3:
+    Description: PrivateSubnet3
+    Value: !Ref PrivateSubnet3
+  
+  PrivateSubnet4:
+    Description: PrivateSubnet4
+    Value: !Ref PrivateSubnet4
+  
+  PrivateSubnet5:
+    Description: PrivateSubnet5
+    Value: !Ref PrivateSubnet5
+          
+  PrivateSubnet6:
+    Description: PrivateSubnet6
+    Value: !Ref PrivateSubnet6
+  
+  PrivateRouteTable:
+    Description: PrivateRouteTable
+    Value: !Ref PrivateRouteTable
+  
+  PrivateSubnet1RouteTableAssociation:
+    Description: PrivateSubnet1RouteTableAssociation
+    Value: !Ref PrivateSubnet1RouteTableAssociation
+      
+  PrivateSubnet2RouteTableAssociation:
+    Description: PrivateSubnet2RouteTableAssociation
+    Value: !Ref PrivateSubnet2RouteTableAssociation
+  
+  PrivateSubnet3RouteTableAssociation:
+    Description: PrivateSubnet3RouteTableAssociation
+    Value: !Ref PrivateSubnet3RouteTableAssociation
+  
+  PrivateSubnet4RouteTableAssociation:
+    Description: PrivateSubnet4RouteTableAssociation
+    Value: !Ref PrivateSubnet4RouteTableAssociation
+      
+  PrivateSubnet5RouteTableAssociation:
+    Description: PrivateSubnet5RouteTableAssociation
+    Value: !Ref PrivateSubnet5RouteTableAssociation
+  
+  PrivateSubnet6RouteTableAssociation:
+    Description: PrivateSubnet6RouteTableAssociation
+    Value: !Ref PrivateSubnet6RouteTableAssociation
+  
+  PrivateNetworkAcl:
+    Description: PrivateNetworkAcl
+    Value: !Ref PrivateNetworkAcl
+  
+  InboundPrivateNetworkAclEntry:
+    Description: InboundPrivateNetworkAclEntry
+    Value: !Ref InboundPrivateNetworkAclEntry
+  
+  OutBoundPrivateNetworkAclEntry:
+    Description: OutBoundPrivateNetworkAclEntry
+    Value: !Ref OutBoundPrivateNetworkAclEntry
+  
+  PrivateSubnet1NetworkAclAssociation:
+    Description: PrivateSubnet1NetworkAclAssociation
+    Value: !Ref PrivateSubnet1NetworkAclAssociation
+      
+  PrivateSubnet2NetworkAclAssociation:
+    Description: PrivateSubnet2NetworkAclAssociation
+    Value: !Ref PrivateSubnet2NetworkAclAssociation
+      
+  PrivateSubnet3NetworkAclAssociation:
+    Description: PrivateSubnet3NetworkAclAssociation
+    Value: !Ref PrivateSubnet3NetworkAclAssociation
+  
+  PrivateSubnet4NetworkAclAssociation:
+    Description: PrivateSubnet4NetworkAclAssociation
+    Value: !Ref PrivateSubnet4NetworkAclAssociation
+      
+  PrivateSubnet5NetworkAclAssociation:
+    Description: PrivateSubnet5NetworkAclAssociation
+    Value: !Ref PrivateSubnet5NetworkAclAssociation
+      
+  PrivateSubnet6NetworkAclAssociation:
+    Description: PrivateSubnet6NetworkAclAssociation
+    Value: !Ref PrivateSubnet6NetworkAclAssociation
+  
+  PublicElasticLoadBalancer:
+    Description: PublicElasticLoadBalancer
+    Value: !Ref PublicElasticLoadBalancer
+  
+  WebLoadBalancerSecurityGroup:
+    Description: WebLoadBalancerSecurityGroup
+    Value: !Ref WebLoadBalancerSecurityGroup
+  
+  WebServerGroup:
+    Description: WebServerGroup
+    Value: !Ref WebServerGroup
+  
+  WebTierLaunchConfig:
+    Description: WebTierLaunchConfig
+    Value: !Ref WebTierLaunchConfig
+  
+  WebInstanceSecurityGroup:
+    Description: WebInstanceSecurityGroup
+    Value: !Ref WebInstanceSecurityGroup
+  
+  WebServerScaleUpPolicy:
+    Description: WebServerScaleUpPolicy
+    Value: !Ref WebServerScaleUpPolicy
+    
+  WebServerScaleDownPolicy:
+    Description: WebServerScaleDownPolicy
+    Value: !Ref WebServerScaleDownPolicy
+  
+  WebNetworkIn:
+    Description: WebNetworkIn
+    Value: !Ref WebNetworkIn
+  
+  WebNetworkOut:
+    Description: WebNetworkOut
+    Value: !Ref WebNetworkOut
+          
+  PrivateElasticLoadBalancer:
+    Description: PrivateElasticLoadBalancer
+    Value: !Ref PrivateElasticLoadBalancer
+  
+  AppLoadBalancerSecurityGroup:
+    Description: AppLoadBalancerSecurityGroup
+    Value: !Ref AppLoadBalancerSecurityGroup
+
+  AppServerGroup:
+    Description: AppServerGroup
+    Value: !Ref AppServerGroup
+  
+  AppTierLaunchConfig:
+    Description: AppTierLaunchConfig
+    Value: !Ref AppTierLaunchConfig
+  
+  AppInstanceSecurityGroup:
+    Description: AppInstanceSecurityGroup
+    Value: !Ref AppInstanceSecurityGroup
+  
+  AppServerScaleUpPolicy:
+    Description: AppServerScaleUpPolicy
+    Value: !Ref AppServerScaleUpPolicy
+    
+  AppServerScaleDownPolicy:
+    Description: AppServerScaleDownPolicy
+    Value: !Ref AppServerScaleDownPolicy
+  
+  AppCPUAlarmHigh:
+    Description: AppCPUAlarmHigh
+    Value: !Ref AppCPUAlarmHigh
+    
+  AppCPUAlarmLow:
+    Description: AppCPUAlarmLow 
+    Value: !Ref AppCPUAlarmLow
+      
+  RDSAccessSecurityGroup:
+    Description: RDSAccessSecurityGroup
+    Value: !Ref RDSAccessSecurityGroup
+    
+  AccessSecurityGroupIngress:
+    Description: AccessSecurityGroupIngress
+    Value: !Ref AccessSecurityGroupIngress
+      
+  DbSubnetGroup:
+    Description: DbSubnetGroup
+    Value: !Ref DbSubnetGroup
+        
+  DbInstance:
+    Description: DbInstance
+    Value: !Ref DbInstance
+    
+  S3Bucket:
+    Description: S3Bucket
+    Value: !Ref S3Bucket
+   
